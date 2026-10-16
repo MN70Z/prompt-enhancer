@@ -111,6 +111,7 @@ export const register: Register = on => {
   on('command.run', { command: 'enhance' }, async ($, e) => {
     const arg = (e.args ?? '').trim().toLowerCase()
     let text: string
+    let toast: string
 
     if (arg === 'auto') {
       const now = !(await read($, autoAtom))
@@ -119,30 +120,39 @@ export const register: Register = on => {
       text = now
         ? 'Auto-enhance ON — every prompt is rewritten and sent. /enhance auto again to turn off.'
         : 'Auto-enhance OFF — end a prompt with ++ to enhance just that one.'
+      toast = now ? '⌁ auto-enhance ON' : '⌁ auto-enhance OFF'
     } else if (arg === 'polish' || arg === 'clarify' || arg === 'spec') {
       await update($, styleAtom, () => arg)
       await $.store.set(STYLE_KEY, arg)
       text = `Enhance style: ${arg} — ${STYLES[arg].blurb}.`
+      toast = `⌁ ${arg}`
     } else if (arg === '' || arg === 'next') {
       const cur = await read($, styleAtom)
+      // STYLE_ORDER is a non-empty const, so the index is always valid; the
+      // ?? only satisfies noUncheckedIndexedAccess and is never reached.
       const nextStyle = STYLE_ORDER[(STYLE_ORDER.indexOf(cur) + 1) % STYLE_ORDER.length] ?? DEFAULT_STYLE
       await update($, styleAtom, () => nextStyle)
       await $.store.set(STYLE_KEY, nextStyle)
       text = `Enhance style → ${nextStyle} — ${STYLES[nextStyle].blurb}. (styles: polish | clarify | spec · /enhance auto to auto-send · end a prompt with ++)`
+      toast = `⌁ ${nextStyle}`
     } else {
       text = 'Usage: /enhance (cycle style) · /enhance polish|clarify|spec · /enhance auto'
+      toast = '⌁ /enhance — see usage'
     }
 
     await refreshStatus($)
-    $.ui.toast(`⌁ ${text.split(' —')[0]}`)
+    $.ui.toast(toast)
 
     return { text }
   })
 
   on('prompt.submit', async ($, e, next) => {
     const trimmedEnd = e.text.replace(/\s+$/, '')
-    const hasMarker = trimmedEnd.endsWith(MARKER)
-    const core = (hasMarker ? trimmedEnd.slice(0, -MARKER.length) : e.text).replace(/\s+$/, '')
+    const beforeMarker = trimmedEnd.slice(0, -MARKER.length)
+    // Require whitespace before ++ (or ++ alone) so "C++" / "x++" never trigger.
+    const hasMarker =
+      trimmedEnd.endsWith(MARKER) && (beforeMarker === '' || /\s$/.test(beforeMarker))
+    const core = (hasMarker ? beforeMarker : e.text).trim()
     const auto = await read($, autoAtom)
 
     // Nothing opted in: leave the prompt exactly as typed.
@@ -150,10 +160,10 @@ export const register: Register = on => {
       return next(e)
     }
 
-    // Don't touch slash-commands, bash (!) escapes, or trivially short text.
-    const probe = core.trim()
-    if (probe.length < MIN_LENGTH || probe.startsWith('/') || probe.startsWith('!')) {
-      return next({ ...e, text: core })
+    // Bare ++, a slash-command, a bash (!) escape, or trivially short text:
+    // submit the author's text with the trigger stripped; if that leaves nothing, send it untouched.
+    if (core.length < MIN_LENGTH || core.startsWith('/') || core.startsWith('!')) {
+      return next(core.length === 0 ? e : { ...e, text: core })
     }
 
     const style = await read($, styleAtom)
@@ -162,24 +172,27 @@ export const register: Register = on => {
 
     $.ui.toast(`⌁ enhancing (${style})…`)
     const enhanced = await enhance($, core, STYLES[style].system)
-
-    if (enhanced === null) {
-      if (review) {
-        await $.prompt.fill({ text: core, mode: 'replace' })
-        $.ui.toast('⌁ couldn’t enhance — your text is back')
-        return { drop: 'prompt-enhancer: enhance failed; original restored for review' }
-      }
-      $.ui.toast('⌁ couldn’t enhance — sent as-is')
-      return next({ ...e, text: core })
-    }
+    const finalText = enhanced ?? core
 
     if (review) {
-      await $.prompt.fill({ text: enhanced, mode: 'replace' })
-      $.ui.toast('⌁ enhanced — review & press Enter')
-      return { drop: 'prompt-enhancer: enhanced prompt filled for review' }
+      // Fill the composer for review; if the composer refuses, send so the prompt is never lost.
+      const { isFilled } = await $.prompt.fill({ text: finalText, mode: 'replace' })
+      if (isFilled) {
+        $.ui.toast(enhanced ? '⌁ enhanced — review & press Enter' : '⌁ couldn’t enhance — your text is back')
+        return { drop: 'prompt-enhancer: filled the composer for review' }
+      }
+      $.ui.toast('⌁ composer busy — sent instead')
+      return next({ ...e, text: finalText })
     }
 
-    $.ui.toast('⌁ enhanced & sent')
-    return next({ ...e, text: enhanced })
-  }).catch(($, e, next) => next(e))
+    $.ui.toast(enhanced ? '⌁ enhanced & sent' : '⌁ couldn’t enhance — sent as-is')
+    return next({ ...e, text: finalText })
+  }).catch(($, e, next) => {
+    if (next.called) {
+      return next(e)
+    }
+    // Error before we forwarded: strip a trailing " ++" trigger and send the author's text.
+    const stripped = e.text.replace(/\s\+\+\s*$/, '')
+    return next({ ...e, text: stripped === '' ? e.text : stripped })
+  })
 }

@@ -10,7 +10,7 @@ function submit(text: string) {
 }
 
 // Wire the bottoms every path needs and expose what the composer was filled with.
-function harness(on: On): () => string | null {
+function harness(on: On, fillOk = true): () => string | null {
   mock.store(on)
   let filled: string | null = null
   // Op-events answer with a { value } envelope; hook events answer directly.
@@ -28,7 +28,7 @@ function harness(on: On): () => string | null {
   }))
   on('prompt.fill', (_$, e) => {
     filled = e.text
-    return { isFilled: true }
+    return { isFilled: fillOk }
   })
   on('ui.toast', () => ({ value: undefined }))
   on('ui.status', () => ({ value: undefined }))
@@ -63,6 +63,33 @@ test('++ on a slash-command is not enhanced, only the marker is stripped', async
 
   expect(r.text).toBe('/notes')
   expect(filled()).toBeNull()
+})
+
+test('a prompt ending in ++ with no space before it (C++) is left untouched', async ($, on) => {
+  const filled = harness(on)
+
+  const r = await $.prompt.submit(submit('how do I compile this in C++'))
+
+  expect(r.text).toBe('how do I compile this in C++')
+  expect(filled()).toBeNull()
+})
+
+test('a bare ++ is a no-op, not an empty prompt', async ($, on) => {
+  const filled = harness(on)
+
+  const r = await $.prompt.submit(submit('++'))
+
+  expect(r.text).toBe('++')
+  expect(filled()).toBeNull()
+})
+
+test('if the composer refuses the fill, the enhanced prompt is sent, not lost', async ($, on) => {
+  harness(on, false)
+
+  const r = await $.prompt.submit(submit('fix the bug ++'))
+
+  expect(r.text).toBe(REWRITE)
+  expect(r.drop).toBeUndefined()
 })
 
 function runEnhance($: Engine, args: string) {
