@@ -1,0 +1,2 @@
+{ "name": "mohamadnour-mods", "owner": { "name": "MN70Z" },
+  "plugins": [{ "name": "prompt-enhancer", "source": "./" }] }

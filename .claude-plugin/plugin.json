@@ -1,0 +1,6 @@
+{
+  "name": "prompt-enhancer",
+  "version": "0.1.0",
+  "description": "AI prompt enhancer: end a prompt with ++ to have it rewritten clearer (filled back for review), or /enhance to toggle auto mode. Uses a fast model and preserves your intent.",
+  "types": "./types/index.d.ts"
+}
